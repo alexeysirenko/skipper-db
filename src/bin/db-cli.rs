@@ -1,3 +1,3 @@
-fn main() {
-    // CLI entry — to be implemented.
+fn main() -> anyhow::Result<()> {
+    skipper_db::cli::Cli::run()
 }

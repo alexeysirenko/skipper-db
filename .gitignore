@@ -22,6 +22,7 @@ target
 
 docs/
 .claude/
+demo-db/
 
 
 # Added by cargo
