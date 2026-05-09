@@ -34,11 +34,7 @@ fn init_then_open_roundtrip() {
     let tmp = tempdir().unwrap();
     let db = tmp.path().join("demo-db");
 
-    db_cli()
-        .args(["init", "--db"])
-        .arg(&db)
-        .assert()
-        .success();
+    db_cli().args(["init", "--db"]).arg(&db).assert().success();
 
     db_cli()
         .args(["open", "--db"])
@@ -53,26 +49,14 @@ fn second_init_fails() {
     let tmp = tempdir().unwrap();
     let db = tmp.path().join("demo-db");
 
-    db_cli()
-        .args(["init", "--db"])
-        .arg(&db)
-        .assert()
-        .success();
+    db_cli().args(["init", "--db"]).arg(&db).assert().success();
 
-    db_cli()
-        .args(["init", "--db"])
-        .arg(&db)
-        .assert()
-        .failure();
+    db_cli().args(["init", "--db"]).arg(&db).assert().failure();
 }
 
 #[test]
 fn open_nonexistent_fails() {
     let tmp = tempdir().unwrap();
     let db = tmp.path().join("never-existed");
-    db_cli()
-        .args(["open", "--db"])
-        .arg(&db)
-        .assert()
-        .failure();
+    db_cli().args(["open", "--db"]).arg(&db).assert().failure();
 }
