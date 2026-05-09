@@ -17,6 +17,7 @@ pub struct FileHeader {
 
 impl FileHeader {
     pub fn write(path: &Path) -> Result<()> {
+        tracing::debug!(path = %path.display(), "writing file header");
         let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
         let version_bytes = FORMAT_VERSION.to_le_bytes();
         let page_size_bytes = DEFAULT_PAGE_SIZE.to_le_bytes();
@@ -51,6 +52,8 @@ impl FileHeader {
         if version != FORMAT_VERSION {
             return Err(Error::UnsupportedVersion(version));
         }
+
+        tracing::debug!(path = %path.display(), version, page_size, "read file header");
 
         Ok(FileHeader {
             magic,

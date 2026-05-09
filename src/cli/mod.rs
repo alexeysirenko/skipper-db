@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use tracing_subscriber::EnvFilter;
 
 use crate::catalog;
 
@@ -9,9 +10,11 @@ use crate::catalog;
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,
+    #[arg(long, global = true)]
+    debug: bool,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 enum Commands {
     Init {
         #[arg(long)]
@@ -26,6 +29,21 @@ enum Commands {
 impl Cli {
     pub fn run() -> anyhow::Result<()> {
         let cli = Cli::parse();
+
+        let filter = if cli.debug {
+            EnvFilter::new("debug")
+        } else {
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into())
+        };
+
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(false)
+            .init();
+
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), "skipper-db starting");
+        tracing::debug!(?cli.command, "dispatching command");
+
         match cli.command {
             Commands::Init { db } => {
                 catalog::init(&db)?;
