@@ -143,3 +143,52 @@ fn plan_unknown_table_fails() {
         .failure()
         .stderr(predicate::str::contains("unknown table"));
 }
+
+fn query(db: &Path, sql: &str) -> Command {
+    let mut cmd = db_cli();
+    cmd.args(["query", "--db"]).arg(db).args(["--sql", sql]);
+    cmd
+}
+
+#[test]
+fn query_create_insert_select_roundtrip() {
+    let tmp = tempdir().unwrap();
+    let db = tmp.path();
+
+    query(db, "CREATE TABLE users (id INT, name TEXT, age INT)")
+        .assert()
+        .success();
+    query(db, "INSERT INTO users VALUES (1, 'Alice', 20)")
+        .assert()
+        .success();
+    query(db, "INSERT INTO users VALUES (2, 'Bob', 17)")
+        .assert()
+        .success();
+
+    // separate processes prove the data persisted to disk
+    query(db, "SELECT name FROM users WHERE age > 18")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Alice").and(predicate::str::contains("Bob").not()));
+}
+
+#[test]
+fn explain_shows_logical_and_physical_plans() {
+    let tmp = tempdir().unwrap();
+    let db = tmp.path();
+    query(db, "CREATE TABLE users (id INT, name TEXT, age INT)")
+        .assert()
+        .success();
+
+    db_cli()
+        .args(["explain", "--db"])
+        .arg(db)
+        .args(["--sql", "SELECT id FROM users WHERE age > 18"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Logical Plan:")
+                .and(predicate::str::contains("Physical Plan:"))
+                .and(predicate::str::contains("TableScanExec users")),
+        );
+}

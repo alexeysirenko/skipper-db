@@ -6,6 +6,8 @@ use tracing_subscriber::EnvFilter;
 use crate::catalog;
 use crate::parser;
 use crate::query;
+use crate::query::exec::{QueryResult, ResultSet};
+use crate::types::Value;
 
 #[derive(Parser)]
 #[command(name = "db-cli", version, about)]
@@ -36,6 +38,18 @@ enum Commands {
         #[arg(long)]
         query: String,
     },
+    Query {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        sql: String,
+    },
+    Explain {
+        #[arg(long)]
+        db: PathBuf,
+        #[arg(long)]
+        sql: String,
+    },
 }
 
 impl Cli {
@@ -51,6 +65,7 @@ impl Cli {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(false)
+            .with_writer(std::io::stderr)
             .init();
 
         tracing::info!(version = env!("CARGO_PKG_VERSION"), "skipper-db starting");
@@ -75,7 +90,44 @@ impl Cli {
                 let plan = query::plan(statement, &catalog)?;
                 print!("{plan}");
             }
+            Commands::Query { db, sql } => {
+                let statement = parser::parse(&sql)?;
+                let catalog = query::DirCatalog::new(db.clone());
+                let logical = query::plan(statement, &catalog)?;
+                let physical = query::physical::from_logical(logical);
+                match query::exec::execute(physical, &db)? {
+                    QueryResult::Select(rs) => print_result(&rs),
+                    QueryResult::Inserted => println!("1 row inserted"),
+                    QueryResult::Created(name) => println!("table {name} created"),
+                }
+            }
+            Commands::Explain { db, sql } => {
+                let statement = parser::parse(&sql)?;
+                let catalog = query::DirCatalog::new(db);
+                let logical = query::plan(statement, &catalog)?;
+                let physical = query::physical::from_logical(logical.clone());
+                println!("Logical Plan:");
+                print!("{logical}");
+                println!("Physical Plan:");
+                print!("{physical}");
+            }
         }
         Ok(())
+    }
+}
+
+fn print_result(rs: &ResultSet) {
+    println!("{}", rs.columns.join(" | "));
+    for row in &rs.rows {
+        let cells: Vec<String> = row.iter().map(format_value).collect();
+        println!("{}", cells.join(" | "));
+    }
+}
+
+fn format_value(v: &Value) -> String {
+    match v {
+        Value::Int(n) => n.to_string(),
+        Value::Text(s) => s.clone(),
+        Value::Null => "NULL".to_string(),
     }
 }
