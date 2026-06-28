@@ -1,3 +1,6 @@
+pub mod page;
+pub mod record;
+
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Read;

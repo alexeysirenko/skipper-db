@@ -1,3 +1,5 @@
+pub mod schema;
+
 use std::path::Path;
 
 use crate::error::Result;
