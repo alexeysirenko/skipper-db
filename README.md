@@ -55,9 +55,9 @@ stored in a sibling `<table>.idx` file (page 0 metadata + one node per page).
 
 ## Parser
 
-A hand-written lexer + recursive-descent parser (no external crate). It turns a
-query string into an internal AST (`src/parser/ast.rs`) and never touches
-storage — execution is a later stage.
+A hand-written lexer + recursive-descent parser that turns a query string into
+an internal AST (`src/parser/ast.rs`). It only parses — no storage access, no
+name/type checking (that's a later binder).
 
 Supported subset:
 
@@ -65,18 +65,9 @@ Supported subset:
     INSERT INTO t [(col, ...)] VALUES (v, ...)        -- v: int | 'string' | NULL
     SELECT */col,... FROM t [WHERE expr] [ORDER BY col [ASC|DESC]] [LIMIT n]
 
-`expr` is built from column refs and int/string/NULL literals with `= != < <= >
->=`, combined by `AND`/`OR` (AND binds tighter) and parentheses.
-
-AST shape: `Statement` is `CreateTable { table, columns }`, `Insert { table,
-columns, values }`, or `Select { projection, from, filter, order_by, limit }`.
-
-It does **not** check that tables/columns exist, that types are compatible, or
-that value and column counts match — that belongs to a later binder. Invalid
-input yields a positioned error (`parse error at position N: ..., found ...`)
-and never panics.
-
-Run it:
+`expr`: comparisons (`= != < <= > >=`) over columns and literals, joined by
+`AND`/`OR` (AND tighter) with parentheses. Errors are positioned; bad input
+never panics.
 
     cargo run -- parse --query "SELECT id, name FROM users WHERE age > 18"
 
