@@ -60,3 +60,34 @@ fn open_nonexistent_fails() {
     let db = tmp.path().join("never-existed");
     db_cli().args(["open", "--db"]).arg(&db).assert().failure();
 }
+
+#[test]
+fn parse_select_prints_ast() {
+    db_cli()
+        .args([
+            "parse",
+            "--query",
+            "SELECT id, name FROM users WHERE age > 18",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Select"));
+}
+
+#[test]
+fn parse_create_table_prints_ast() {
+    db_cli()
+        .args(["parse", "--query", "CREATE TABLE users (id INT, name TEXT)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("CreateTable"));
+}
+
+#[test]
+fn parse_invalid_query_fails() {
+    db_cli()
+        .args(["parse", "--query", "SELECT FROM users"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("parse error"));
+}

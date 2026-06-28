@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use crate::catalog;
+use crate::parser;
 
 #[derive(Parser)]
 #[command(name = "db-cli", version, about)]
@@ -23,6 +24,10 @@ enum Commands {
     Open {
         #[arg(long)]
         db: PathBuf,
+    },
+    Parse {
+        #[arg(long)]
+        query: String,
     },
 }
 
@@ -52,6 +57,10 @@ impl Cli {
             Commands::Open { db } => {
                 let header = catalog::open(&db)?;
                 println!("opened {} (version {})", db.display(), header.version)
+            }
+            Commands::Parse { query } => {
+                let statement = parser::parse(&query)?;
+                println!("{statement:#?}");
             }
         }
         Ok(())
