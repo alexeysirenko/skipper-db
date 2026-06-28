@@ -18,6 +18,8 @@ pub enum Error {
     SchemaTooLarge,
     #[error("record is too large for a page")]
     RecordTooLarge,
+    #[error("malformed index")]
+    MalformedIndex,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
