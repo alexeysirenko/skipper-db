@@ -1,3 +1,4 @@
+pub mod physical;
 pub mod plan;
 
 use std::collections::HashSet;

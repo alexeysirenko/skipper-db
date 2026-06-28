@@ -79,7 +79,7 @@ impl LogicalPlan {
     }
 }
 
-fn format_column(c: &ColumnDef) -> String {
+pub(crate) fn format_column(c: &ColumnDef) -> String {
     let ty = match c.ty {
         DataType::Int => "INT",
         DataType::Text => "TEXT",
@@ -87,7 +87,7 @@ fn format_column(c: &ColumnDef) -> String {
     format!("{} {ty}", c.name)
 }
 
-fn format_literal(l: &Literal) -> String {
+pub(crate) fn format_literal(l: &Literal) -> String {
     match l {
         Literal::Int(n) => n.to_string(),
         Literal::Str(s) => format!("'{s}'"),
@@ -95,7 +95,7 @@ fn format_literal(l: &Literal) -> String {
     }
 }
 
-fn format_expr(e: &Expr) -> String {
+pub(crate) fn format_expr(e: &Expr) -> String {
     match e {
         Expr::Column(c) => c.clone(),
         Expr::Literal(l) => format_literal(l),
