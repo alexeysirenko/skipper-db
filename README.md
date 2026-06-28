@@ -130,3 +130,13 @@ first.
     cargo run -- query   --db ./demo-db --sql "INSERT INTO users VALUES (1, 'Alice', 20)"
     cargo run -- query   --db ./demo-db --sql "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10"
     cargo run -- explain --db ./demo-db --sql "SELECT id FROM users WHERE age > 18"
+
+## TODO
+
+Not yet wired to SQL, in rough priority:
+
+- `UPDATE t SET col = val [WHERE expr]` — storage `Table::update` already exists.
+- `DELETE FROM t [WHERE expr]` — storage `Table::delete` already exists.
+- `INNER JOIN ... ON a = b` with qualified column names (`users.id`).
+- Aggregation: `COUNT(*)`, `SUM`/`MIN`/`MAX`/`AVG`, with `GROUP BY`.
+- More scalar functions (`UPPER`, `LOWER`, `ABS`).
