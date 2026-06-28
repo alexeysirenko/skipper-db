@@ -63,11 +63,11 @@ Supported subset:
 
     CREATE TABLE t (col INT|TEXT [NOT NULL | NULL], ...)
     INSERT INTO t [(col, ...)] VALUES (v, ...)        -- v: int | 'string' | NULL
-    SELECT */col,... FROM t [WHERE expr] [ORDER BY col [ASC|DESC]] [LIMIT n]
+    SELECT */item,... FROM t [WHERE expr] [ORDER BY col [ASC|DESC]] [LIMIT n]
 
-`expr`: comparisons (`= != < <= > >=`) over columns and literals, joined by
-`AND`/`OR` (AND tighter) with parentheses. Errors are positioned; bad input
-never panics.
+A projection item is `expr [AS alias]`. `expr`: columns, literals, the scalar
+function `LENGTH(text)`, and comparisons (`= != < <= > >=`) joined by `AND`/`OR`
+(AND tighter) with parentheses. Errors are positioned; bad input never panics.
 
     cargo run -- parse --query "SELECT id, name FROM users WHERE age > 18"
 
