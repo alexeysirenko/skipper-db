@@ -112,7 +112,10 @@ mod tests {
     fn rejects_wrong_arity() {
         assert!(matches!(
             encode(&schema(), &[Value::Int(1)]),
-            Err(Error::RecordArity { expected: 2, got: 1 })
+            Err(Error::RecordArity {
+                expected: 2,
+                got: 1
+            })
         ));
     }
 
