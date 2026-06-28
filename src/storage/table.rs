@@ -1,17 +1,22 @@
+use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::catalog::schema::Schema;
 use crate::error::{Error, Result};
+use crate::storage::btree::BTree;
 use crate::storage::page::{PAGE_SIZE, SlotId, SlottedPage};
 use crate::storage::record;
 use crate::storage::{DEFAULT_PAGE_SIZE, FORMAT_VERSION, MAGIC};
-use crate::types::Value;
+use crate::types::{ColumnType, Value};
 
-// Metadata page (page 0) layout: magic, version, page size, schema length, then
-// the serialized schema. Data lives in slotted pages 1..N.
-const SCHEMA_OFFSET: usize = 20;
+// Metadata page (page 0): magic, version, page size, schema length, indexed
+// column (0 = none, else column + 1), then the serialized schema. Data lives in
+// slotted pages 1..N.
+const SCHEMA_LEN_OFFSET: usize = 16;
+const INDEX_COL_OFFSET: usize = 20;
+const SCHEMA_OFFSET: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rid {
@@ -19,9 +24,16 @@ pub struct Rid {
     pub slot: SlotId,
 }
 
+struct Index {
+    column: usize,
+    tree: BTree,
+}
+
 pub struct Table {
     file: File,
     schema: Schema,
+    path: PathBuf,
+    index: Option<Index>,
 }
 
 impl Table {
@@ -35,7 +47,8 @@ impl Table {
         meta[0..8].copy_from_slice(&MAGIC);
         meta[8..12].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
         meta[12..16].copy_from_slice(&DEFAULT_PAGE_SIZE.to_le_bytes());
-        meta[16..20].copy_from_slice(&(schema_bytes.len() as u32).to_le_bytes());
+        meta[SCHEMA_LEN_OFFSET..SCHEMA_LEN_OFFSET + 4]
+            .copy_from_slice(&(schema_bytes.len() as u32).to_le_bytes());
         meta[SCHEMA_OFFSET..SCHEMA_OFFSET + schema_bytes.len()].copy_from_slice(&schema_bytes);
 
         let mut file = OpenOptions::new()
@@ -46,7 +59,12 @@ impl Table {
         file.write_all(&meta)?;
         file.sync_all()?;
 
-        Ok(Table { file, schema })
+        Ok(Table {
+            file,
+            schema,
+            path: path.to_path_buf(),
+            index: None,
+        })
     }
 
     pub fn open(path: &Path) -> Result<Table> {
@@ -62,13 +80,37 @@ impl Table {
             return Err(Error::UnsupportedVersion(version));
         }
 
-        let schema_len = u32::from_le_bytes(meta[16..20].try_into().unwrap()) as usize;
+        let schema_len = u32::from_le_bytes(
+            meta[SCHEMA_LEN_OFFSET..SCHEMA_LEN_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        ) as usize;
         let schema_bytes = meta
             .get(SCHEMA_OFFSET..SCHEMA_OFFSET + schema_len)
             .ok_or(Error::MalformedSchema)?;
         let schema = Schema::deserialize(schema_bytes)?;
 
-        Ok(Table { file, schema })
+        let index_marker = u32::from_le_bytes(
+            meta[INDEX_COL_OFFSET..INDEX_COL_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        );
+        let index = if index_marker == 0 {
+            None
+        } else {
+            let tree = BTree::open(&index_path(path))?;
+            Some(Index {
+                column: index_marker as usize - 1,
+                tree,
+            })
+        };
+
+        Ok(Table {
+            file,
+            schema,
+            path: path.to_path_buf(),
+            index,
+        })
     }
 
     pub fn schema(&self) -> &Schema {
@@ -77,12 +119,22 @@ impl Table {
 
     pub fn insert(&mut self, values: &[Value]) -> Result<Rid> {
         let record = record::encode(&self.schema, values)?;
+        let rid = self.insert_record(&record)?;
+        if let Some(index) = self.index.as_mut()
+            && let Value::Int(key) = &values[index.column]
+        {
+            index.tree.insert(*key, rid)?;
+        }
+        Ok(rid)
+    }
+
+    fn insert_record(&mut self, record: &[u8]) -> Result<Rid> {
         let page_count = self.page_count()?;
 
         if page_count > 1 {
             let last = page_count - 1;
             let mut page = self.read_page(last)?;
-            if let Some(slot) = page.insert(&record) {
+            if let Some(slot) = page.insert(record) {
                 self.write_page(last, &page)?;
                 return Ok(Rid { page: last, slot });
             }
@@ -90,12 +142,64 @@ impl Table {
 
         let page_id = page_count.max(1);
         let mut page = SlottedPage::new();
-        let slot = page.insert(&record).ok_or(Error::RecordTooLarge)?;
+        let slot = page.insert(record).ok_or(Error::RecordTooLarge)?;
         self.write_page(page_id, &page)?;
         Ok(Rid {
             page: page_id,
             slot,
         })
+    }
+
+    pub fn create_index(&mut self, column: &str) -> Result<()> {
+        let col = self
+            .schema
+            .column_index(column)
+            .ok_or_else(|| Error::UnknownColumn(column.to_string()))?;
+        if self.schema.columns[col].ty != ColumnType::Int {
+            return Err(Error::UnsupportedKeyType);
+        }
+
+        let mut entries = Vec::new();
+        for item in self.scan() {
+            let (rid, row) = item?;
+            if let Value::Int(key) = row[col] {
+                entries.push((key, rid));
+            }
+        }
+
+        let mut tree = BTree::create(&index_path(&self.path))?;
+        for (key, rid) in entries {
+            tree.insert(key, rid)?;
+        }
+
+        self.write_index_marker(col)?;
+        self.index = Some(Index { column: col, tree });
+        Ok(())
+    }
+
+    // Looks the row up through `get`, so a stale entry (deleted row or changed
+    // key) resolves to None rather than a wrong row.
+    pub fn find_by_key(&mut self, key: i64) -> Result<Option<(Rid, Vec<Value>)>> {
+        let column = self.index.as_ref().ok_or(Error::NoIndex)?.column;
+        let Some(rid) = self.index.as_mut().unwrap().tree.find(key)? else {
+            return Ok(None);
+        };
+        match self.get(rid)? {
+            Some(row) if matches!(&row[column], Value::Int(k) if *k == key) => Ok(Some((rid, row))),
+            _ => Ok(None),
+        }
+    }
+
+    fn write_index_marker(&mut self, column: usize) -> Result<()> {
+        let mut meta = [0u8; PAGE_SIZE];
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.read_exact(&mut meta)?;
+        meta[INDEX_COL_OFFSET..INDEX_COL_OFFSET + 4]
+            .copy_from_slice(&(column as u32 + 1).to_le_bytes());
+        self.file.seek(SeekFrom::Start(0))?;
+        self.file.write_all(&meta)?;
+        self.file.sync_all()?;
+        Ok(())
     }
 
     pub fn get(&mut self, rid: Rid) -> Result<Option<Vec<Value>>> {
@@ -166,6 +270,12 @@ impl Table {
         self.file.sync_all()?;
         Ok(())
     }
+}
+
+fn index_path(table_path: &Path) -> PathBuf {
+    let mut name = OsString::from(table_path);
+    name.push(".idx");
+    PathBuf::from(name)
 }
 
 pub struct Scan<'a> {
@@ -532,5 +642,96 @@ mod tests {
                 .update(missing, &[Value::Int(1), Value::Null])
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn index_built_from_existing_rows_finds_by_key() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        for i in 0..20 {
+            table
+                .insert(&[Value::Int(i), Value::Text(format!("n{i}"))])
+                .unwrap();
+        }
+        table.create_index("id").unwrap();
+
+        let (_, row) = table.find_by_key(12).unwrap().unwrap();
+        assert_eq!(row, vec![Value::Int(12), Value::Text("n12".to_string())]);
+        assert!(table.find_by_key(99).unwrap().is_none());
+    }
+
+    #[test]
+    fn inserts_after_create_index_are_findable() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        table.create_index("id").unwrap();
+        for i in 0..20 {
+            table
+                .insert(&[Value::Int(i), Value::Text(format!("n{i}"))])
+                .unwrap();
+        }
+
+        let (_, row) = table.find_by_key(7).unwrap().unwrap();
+        assert_eq!(row, vec![Value::Int(7), Value::Text("n7".to_string())]);
+    }
+
+    #[test]
+    fn index_persists_after_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        {
+            let mut table = Table::create(&path, sample_schema()).unwrap();
+            table.create_index("id").unwrap();
+            for i in 0..30 {
+                table.insert(&[Value::Int(i), Value::Null]).unwrap();
+            }
+        }
+
+        let mut table = Table::open(&path).unwrap();
+        let (_, row) = table.find_by_key(25).unwrap().unwrap();
+        assert_eq!(row, vec![Value::Int(25), Value::Null]);
+    }
+
+    #[test]
+    fn find_by_key_ignores_deleted_row() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+        table.create_index("id").unwrap();
+
+        let rid = table
+            .insert(&[Value::Int(5), Value::Text("e".to_string())])
+            .unwrap();
+        table.delete(rid).unwrap();
+
+        assert!(table.find_by_key(5).unwrap().is_none());
+    }
+
+    #[test]
+    fn create_index_rejects_bad_column() {
+        let dir = tempdir().unwrap();
+        let mut table = Table::create(&dir.path().join("a.tbl"), sample_schema()).unwrap();
+        assert!(matches!(
+            table.create_index("missing"),
+            Err(Error::UnknownColumn(_))
+        ));
+
+        let mut table = Table::create(&dir.path().join("b.tbl"), sample_schema()).unwrap();
+        assert!(matches!(
+            table.create_index("name"),
+            Err(Error::UnsupportedKeyType)
+        ));
+    }
+
+    #[test]
+    fn find_by_key_without_index_errors() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+        assert!(matches!(table.find_by_key(1), Err(Error::NoIndex)));
     }
 }

@@ -20,6 +20,12 @@ pub enum Error {
     RecordTooLarge,
     #[error("malformed index")]
     MalformedIndex,
+    #[error("unknown column \"{0}\"")]
+    UnknownColumn(String),
+    #[error("index key column must be INT")]
+    UnsupportedKeyType,
+    #[error("table has no index")]
+    NoIndex,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
