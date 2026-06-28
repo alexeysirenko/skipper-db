@@ -1,7 +1,10 @@
 pub mod ast;
 pub mod lexer;
 
-use ast::{ColumnDef, CreateTable, DataType, Insert, Literal, Statement};
+use ast::{
+    ColumnDef, CompareOp, CreateTable, DataType, Expr, Insert, Literal, OrderBy, Projection,
+    Select, Statement,
+};
 use lexer::{ParseError, Token, TokenKind, tokenize};
 
 pub fn parse(input: &str) -> Result<Statement, ParseError> {
@@ -25,8 +28,150 @@ impl Parser {
             Ok(Statement::CreateTable(self.parse_create_table()?))
         } else if self.peek_keyword("INSERT") {
             Ok(Statement::Insert(self.parse_insert()?))
+        } else if self.peek_keyword("SELECT") {
+            Ok(Statement::Select(self.parse_select()?))
         } else {
             Err(self.error("expected CREATE, INSERT, or SELECT"))
+        }
+    }
+
+    fn parse_select(&mut self) -> Result<Select, ParseError> {
+        self.expect_keyword("SELECT")?;
+        let projection = self.parse_projection()?;
+        self.expect_keyword("FROM")?;
+        let from = self.parse_name("table name")?;
+
+        let filter = if self.eat_keyword("WHERE") {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
+        let order_by = if self.eat_keyword("ORDER") {
+            self.expect_keyword("BY")?;
+            let column = self.parse_name("column name")?;
+            let descending = if self.eat_keyword("DESC") {
+                true
+            } else {
+                self.eat_keyword("ASC");
+                false
+            };
+            Some(OrderBy { column, descending })
+        } else {
+            None
+        };
+
+        let limit = if self.eat_keyword("LIMIT") {
+            Some(self.parse_limit()?)
+        } else {
+            None
+        };
+
+        Ok(Select {
+            projection,
+            from,
+            filter,
+            order_by,
+            limit,
+        })
+    }
+
+    fn parse_projection(&mut self) -> Result<Projection, ParseError> {
+        if self.eat(&TokenKind::Star) {
+            return Ok(Projection::All);
+        }
+        let mut columns = vec![self.parse_name("a column or '*'")?];
+        while self.eat(&TokenKind::Comma) {
+            columns.push(self.parse_name("a column name")?);
+        }
+        Ok(Projection::Columns(columns))
+    }
+
+    fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_and()?;
+        while self.eat_keyword("OR") {
+            let right = self.parse_and()?;
+            left = Expr::Or(Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_compare()?;
+        while self.eat_keyword("AND") {
+            let right = self.parse_compare()?;
+            left = Expr::And(Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_compare(&mut self) -> Result<Expr, ParseError> {
+        let left = self.parse_primary()?;
+        match self.eat_compare_op() {
+            Some(op) => {
+                let right = self.parse_primary()?;
+                Ok(Expr::Compare {
+                    left: Box::new(left),
+                    op,
+                    right: Box::new(right),
+                })
+            }
+            None => Ok(left),
+        }
+    }
+
+    fn eat_compare_op(&mut self) -> Option<CompareOp> {
+        let op = match self.current() {
+            TokenKind::Eq => CompareOp::Eq,
+            TokenKind::NotEq => CompareOp::NotEq,
+            TokenKind::Lt => CompareOp::Lt,
+            TokenKind::LtEq => CompareOp::LtEq,
+            TokenKind::Gt => CompareOp::Gt,
+            TokenKind::GtEq => CompareOp::GtEq,
+            _ => return None,
+        };
+        self.advance();
+        Some(op)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        match self.current() {
+            TokenKind::LParen => {
+                self.advance();
+                let expr = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "')' after expression")?;
+                Ok(expr)
+            }
+            TokenKind::Int(n) => {
+                let n = *n;
+                self.advance();
+                Ok(Expr::Literal(Literal::Int(n)))
+            }
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Expr::Literal(Literal::Str(s)))
+            }
+            TokenKind::Ident(kw) if kw.eq_ignore_ascii_case("NULL") => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Null))
+            }
+            TokenKind::Ident(s) if !is_reserved(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Expr::Column(s))
+            }
+            _ => Err(self.error("expected an expression")),
+        }
+    }
+
+    fn parse_limit(&mut self) -> Result<i64, ParseError> {
+        if let TokenKind::Int(n) = self.current() {
+            let n = *n;
+            self.advance();
+            Ok(n)
+        } else {
+            Err(self.error("expected a number after LIMIT"))
         }
     }
 
@@ -169,6 +314,17 @@ impl Parser {
         }
     }
 
+    fn parse_name(&mut self, what: &str) -> Result<String, ParseError> {
+        if let TokenKind::Ident(s) = self.current()
+            && !is_reserved(s)
+        {
+            let s = s.clone();
+            self.advance();
+            return Ok(s);
+        }
+        Err(self.error(format!("expected {what}")))
+    }
+
     fn eat(&mut self, kind: &TokenKind) -> bool {
         if self.current() == kind {
             self.advance();
@@ -192,6 +348,14 @@ impl Parser {
             pos: self.tokens[self.pos].pos,
         }
     }
+}
+
+fn is_reserved(word: &str) -> bool {
+    const KEYWORDS: [&str; 19] = [
+        "SELECT", "FROM", "WHERE", "ORDER", "BY", "LIMIT", "AND", "OR", "NOT", "NULL", "ASC",
+        "DESC", "INSERT", "INTO", "VALUES", "CREATE", "TABLE", "INT", "TEXT",
+    ];
+    KEYWORDS.iter().any(|k| word.eq_ignore_ascii_case(k))
 }
 
 fn describe(kind: &TokenKind) -> String {
@@ -321,5 +485,132 @@ mod tests {
     #[test]
     fn does_not_panic_on_empty_input() {
         assert!(parse("").is_err());
+    }
+
+    fn select(stmt: Statement) -> Select {
+        match stmt {
+            Statement::Select(s) => s,
+            other => panic!("expected SELECT, got {other:?}"),
+        }
+    }
+
+    fn column(name: &str) -> Expr {
+        Expr::Column(name.to_string())
+    }
+
+    fn int(n: i64) -> Expr {
+        Expr::Literal(Literal::Int(n))
+    }
+
+    fn cmp(left: Expr, op: CompareOp, right: Expr) -> Expr {
+        Expr::Compare {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        }
+    }
+
+    #[test]
+    fn parses_select_star() {
+        let s = select(parse("SELECT * FROM users").unwrap());
+        assert_eq!(s.projection, Projection::All);
+        assert_eq!(s.from, "users");
+        assert_eq!(s.filter, None);
+        assert_eq!(s.order_by, None);
+        assert_eq!(s.limit, None);
+    }
+
+    #[test]
+    fn parses_select_columns() {
+        let s = select(parse("SELECT id, name FROM users").unwrap());
+        assert_eq!(
+            s.projection,
+            Projection::Columns(vec!["id".to_string(), "name".to_string()])
+        );
+    }
+
+    #[test]
+    fn parses_where_comparison() {
+        let s = select(parse("SELECT id FROM users WHERE age > 18").unwrap());
+        assert_eq!(s.filter, Some(cmp(column("age"), CompareOp::Gt, int(18))));
+    }
+
+    #[test]
+    fn and_binds_tighter_than_or() {
+        let s = select(parse("SELECT * FROM t WHERE a = 1 OR b = 2 AND c = 3").unwrap());
+        assert_eq!(
+            s.filter,
+            Some(Expr::Or(
+                Box::new(cmp(column("a"), CompareOp::Eq, int(1))),
+                Box::new(Expr::And(
+                    Box::new(cmp(column("b"), CompareOp::Eq, int(2))),
+                    Box::new(cmp(column("c"), CompareOp::Eq, int(3))),
+                )),
+            ))
+        );
+    }
+
+    #[test]
+    fn parentheses_override_precedence() {
+        let s = select(parse("SELECT * FROM t WHERE (a = 1 OR b = 2) AND c = 3").unwrap());
+        assert_eq!(
+            s.filter,
+            Some(Expr::And(
+                Box::new(Expr::Or(
+                    Box::new(cmp(column("a"), CompareOp::Eq, int(1))),
+                    Box::new(cmp(column("b"), CompareOp::Eq, int(2))),
+                )),
+                Box::new(cmp(column("c"), CompareOp::Eq, int(3))),
+            ))
+        );
+    }
+
+    #[test]
+    fn parses_order_by_and_limit() {
+        let s = select(
+            parse("SELECT id, name FROM users WHERE age > 18 ORDER BY name DESC LIMIT 10").unwrap(),
+        );
+        assert_eq!(
+            s.order_by,
+            Some(OrderBy {
+                column: "name".to_string(),
+                descending: true,
+            })
+        );
+        assert_eq!(s.limit, Some(10));
+    }
+
+    #[test]
+    fn parses_string_equality() {
+        let s = select(parse("SELECT id FROM users WHERE name = 'Alice'").unwrap());
+        assert_eq!(
+            s.filter,
+            Some(cmp(
+                column("name"),
+                CompareOp::Eq,
+                Expr::Literal(Literal::Str("Alice".to_string())),
+            ))
+        );
+    }
+
+    #[test]
+    fn rejects_select_without_projection() {
+        let e = parse("SELECT FROM users").unwrap_err();
+        assert!(e.message.contains("column"));
+    }
+
+    #[test]
+    fn rejects_select_without_from() {
+        assert!(parse("SELECT id users").is_err());
+    }
+
+    #[test]
+    fn rejects_where_without_expression() {
+        assert!(parse("SELECT id FROM users WHERE").is_err());
+    }
+
+    #[test]
+    fn rejects_limit_without_number() {
+        assert!(parse("SELECT * FROM t LIMIT").is_err());
     }
 }
