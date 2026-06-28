@@ -71,3 +71,18 @@ never panics.
 
     cargo run -- parse --query "SELECT id, name FROM users WHERE age > 18"
 
+## Planner
+
+Turns an AST into a logical plan (`src/query/plan.rs`) and binds it against the
+catalog (table/column existence, value counts). A SELECT becomes a tree built
+bottom-up Scan -> Filter -> Sort -> Projection -> Limit:
+
+    Limit 10
+      Projection [id, name]
+        Filter [age > 18]
+          Scan users
+
+It still does not execute — just builds and validates the plan. `--db` points at
+a directory of `<table>.tbl` files used as the catalog.
+
+    cargo run -- plan --db ./demo-db --query "SELECT id FROM users WHERE age > 18 LIMIT 5"
