@@ -1,3 +1,4 @@
+pub mod exec;
 pub mod physical;
 pub mod plan;
 
@@ -5,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::catalog::schema::{Column, Schema};
+use crate::catalog::schema::Schema;
 use crate::parser::ast::{CreateTable, Expr, Insert, Literal, Projection, Select, Statement};
 use crate::storage::table::Table;
 use plan::LogicalPlan;
@@ -68,41 +69,63 @@ fn plan_create_table(ct: CreateTable) -> Result<LogicalPlan, PlanError> {
 }
 
 fn plan_insert(ins: Insert, catalog: &dyn Catalog) -> Result<LogicalPlan, PlanError> {
+    let Insert {
+        table,
+        columns,
+        values,
+    } = ins;
     let schema = catalog
-        .schema(&ins.table)
-        .ok_or_else(|| unknown_table(&ins.table))?;
+        .schema(&table)
+        .ok_or_else(|| unknown_table(&table))?;
 
-    let targets: Vec<&Column> = match &ins.columns {
-        Some(names) => names
-            .iter()
-            .map(|n| {
-                schema
-                    .column_index(n)
-                    .map(|i| &schema.columns[i])
-                    .ok_or_else(|| unknown_column(n, &ins.table))
-            })
-            .collect::<Result<_, _>>()?,
-        None => schema.columns.iter().collect(),
+    // Reorder values into table-column order so execution can insert positionally.
+    let ordered: Vec<Literal> = match columns {
+        None => {
+            if values.len() != schema.columns.len() {
+                return Err(err(format!(
+                    "table \"{table}\" expects {} values but got {}",
+                    schema.columns.len(),
+                    values.len()
+                )));
+            }
+            values
+        }
+        Some(names) => {
+            if names.len() != values.len() {
+                return Err(err(format!(
+                    "got {} columns but {} values",
+                    names.len(),
+                    values.len()
+                )));
+            }
+            for n in &names {
+                if schema.column_index(n).is_none() {
+                    return Err(unknown_column(n, &table));
+                }
+            }
+            schema
+                .columns
+                .iter()
+                .map(|col| {
+                    names
+                        .iter()
+                        .position(|n| n == &col.name)
+                        .map(|i| values[i].clone())
+                        .unwrap_or(Literal::Null)
+                })
+                .collect()
+        }
     };
 
-    if ins.values.len() != targets.len() {
-        return Err(err(format!(
-            "table \"{}\" expects {} values but got {}",
-            ins.table,
-            targets.len(),
-            ins.values.len()
-        )));
-    }
-
-    for (value, column) in ins.values.iter().zip(&targets) {
+    for (value, column) in ordered.iter().zip(&schema.columns) {
         if matches!(value, Literal::Null) && !column.nullable {
             return Err(err(format!("column \"{}\" is NOT NULL", column.name)));
         }
     }
 
     Ok(LogicalPlan::Insert {
-        table: ins.table,
-        values: ins.values,
+        table,
+        values: ordered,
     })
 }
 
@@ -200,6 +223,7 @@ fn unknown_column(column: &str, table: &str) -> PlanError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::schema::Column;
     use crate::parser::parse;
     use crate::types::ColumnType;
     use std::collections::HashMap;
@@ -298,6 +322,12 @@ mod tests {
     #[test]
     fn rejects_insert_value_count_mismatch() {
         assert!(planned("INSERT INTO users VALUES (1)").is_err());
+    }
+
+    #[test]
+    fn insert_column_list_is_reordered() {
+        let plan = planned("INSERT INTO users (age, id, name) VALUES (20, 1, 'Alice')").unwrap();
+        assert_eq!(plan.to_string(), "Insert users [1, 'Alice', 20]\n");
     }
 
     #[test]
