@@ -5,6 +5,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::catalog;
 use crate::parser;
+use crate::query;
 
 #[derive(Parser)]
 #[command(name = "db-cli", version, about)]
@@ -26,6 +27,12 @@ enum Commands {
         db: PathBuf,
     },
     Parse {
+        #[arg(long)]
+        query: String,
+    },
+    Plan {
+        #[arg(long)]
+        db: PathBuf,
         #[arg(long)]
         query: String,
     },
@@ -61,6 +68,12 @@ impl Cli {
             Commands::Parse { query } => {
                 let statement = parser::parse(&query)?;
                 println!("{statement:#?}");
+            }
+            Commands::Plan { db, query } => {
+                let statement = parser::parse(&query)?;
+                let catalog = query::DirCatalog::new(db);
+                let plan = query::plan(statement, &catalog)?;
+                print!("{plan}");
             }
         }
         Ok(())

@@ -1,9 +1,34 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use skipper_db::catalog::schema::{Column, Schema};
+use skipper_db::storage::table::Table;
+use skipper_db::types::ColumnType;
+use std::path::Path;
 use tempfile::tempdir;
 
 fn db_cli() -> Command {
     Command::cargo_bin("db-cli").unwrap()
+}
+
+fn create_users_table(dir: &Path) {
+    let schema = Schema::new(vec![
+        Column {
+            name: "id".to_string(),
+            ty: ColumnType::Int,
+            nullable: false,
+        },
+        Column {
+            name: "name".to_string(),
+            ty: ColumnType::Text,
+            nullable: true,
+        },
+        Column {
+            name: "age".to_string(),
+            ty: ColumnType::Int,
+            nullable: true,
+        },
+    ]);
+    Table::create(&dir.join("users.tbl"), schema).unwrap();
 }
 
 #[test]
@@ -90,4 +115,31 @@ fn parse_invalid_query_fails() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("parse error"));
+}
+
+#[test]
+fn plan_select_prints_tree() {
+    let tmp = tempdir().unwrap();
+    create_users_table(tmp.path());
+
+    db_cli()
+        .args(["plan", "--db"])
+        .arg(tmp.path())
+        .args(["--query", "SELECT id FROM users WHERE age > 18 LIMIT 5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Scan users"));
+}
+
+#[test]
+fn plan_unknown_table_fails() {
+    let tmp = tempdir().unwrap();
+
+    db_cli()
+        .args(["plan", "--db"])
+        .arg(tmp.path())
+        .args(["--query", "SELECT * FROM ghost"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown table"));
 }
