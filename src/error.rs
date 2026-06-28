@@ -12,6 +12,8 @@ pub enum Error {
     TypeMismatch { column: String },
     #[error("malformed record")]
     MalformedRecord,
+    #[error("malformed schema")]
+    MalformedSchema,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
