@@ -209,6 +209,13 @@ fn check_columns(e: &Expr, schema: &Schema, table: &str) -> Result<(), PlanError
             Ok(())
         }
         Expr::Literal(_) => Ok(()),
+        Expr::Function { name, args } => {
+            validate_function(name, args.len())?;
+            for arg in args {
+                check_columns(arg, schema, table)?;
+            }
+            Ok(())
+        }
         Expr::Compare { left, right, .. } => {
             check_columns(left, schema, table)?;
             check_columns(right, schema, table)
@@ -217,6 +224,17 @@ fn check_columns(e: &Expr, schema: &Schema, table: &str) -> Result<(), PlanError
             check_columns(l, schema, table)?;
             check_columns(r, schema, table)
         }
+    }
+}
+
+fn validate_function(name: &str, argc: usize) -> Result<(), PlanError> {
+    if name.eq_ignore_ascii_case("LENGTH") {
+        if argc != 1 {
+            return Err(err(format!("LENGTH expects 1 argument, got {argc}")));
+        }
+        Ok(())
+    } else {
+        Err(err(format!("unknown function \"{name}\"")))
     }
 }
 
@@ -360,5 +378,24 @@ mod tests {
     #[test]
     fn rejects_negative_limit() {
         assert!(planned("SELECT id FROM users LIMIT -1").is_err());
+    }
+
+    #[test]
+    fn plans_scalar_function() {
+        let plan = planned("SELECT name, LENGTH(name) FROM users").unwrap();
+        assert_eq!(
+            plan.to_string(),
+            "Projection [name, LENGTH(name)]\n  Scan users\n"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_function() {
+        assert!(planned("SELECT FOO(name) FROM users").is_err());
+    }
+
+    #[test]
+    fn rejects_function_over_unknown_column() {
+        assert!(planned("SELECT id FROM users WHERE LENGTH(zzz) > 3").is_err());
     }
 }

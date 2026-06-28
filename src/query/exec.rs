@@ -211,7 +211,7 @@ fn eval_predicate(expr: &Expr, row: &[Value], columns: &[String]) -> bool {
             let r = eval_scalar(right, row, columns);
             compare(&l, *op, &r)
         }
-        Expr::Column(_) | Expr::Literal(_) => {
+        Expr::Column(_) | Expr::Literal(_) | Expr::Function { .. } => {
             matches!(eval_scalar(expr, row, columns), Value::Int(n) if n != 0)
         }
     }
@@ -225,7 +225,20 @@ fn eval_scalar(expr: &Expr, row: &[Value], columns: &[String]) -> Value {
             .map(|i| row[i].clone())
             .unwrap_or(Value::Null),
         Expr::Literal(l) => to_value(l),
+        Expr::Function { name, args } => apply_function(name, eval_scalar(&args[0], row, columns)),
         _ => Value::Int(eval_predicate(expr, row, columns) as i64),
+    }
+}
+
+fn apply_function(name: &str, arg: Value) -> Value {
+    // Only LENGTH is supported; the planner rejects anything else.
+    if name.eq_ignore_ascii_case("LENGTH") {
+        match arg {
+            Value::Text(s) => Value::Int(s.chars().count() as i64),
+            _ => Value::Null,
+        }
+    } else {
+        Value::Null
     }
 }
 
@@ -379,6 +392,45 @@ mod tests {
 
         // a fresh run() opens the table files again, simulating a restart
         assert_eq!(rows(run(dir, "SELECT id FROM users ORDER BY id")).len(), 3);
+    }
+
+    #[test]
+    fn scalar_function_in_projection() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        setup(dir);
+
+        let result = run(dir, "SELECT name, LENGTH(name) FROM users WHERE id = 1");
+        match result {
+            QueryResult::Select(rs) => {
+                assert_eq!(rs.columns, vec!["name", "LENGTH(name)"]);
+                assert_eq!(
+                    rs.rows,
+                    vec![vec![Value::Text("Alice".to_string()), Value::Int(5)]]
+                );
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn scalar_function_in_where() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        setup(dir);
+
+        // Alice=5, Bob=3, Carol=5; only > 3 survive
+        let result = run(
+            dir,
+            "SELECT name FROM users WHERE LENGTH(name) > 3 ORDER BY name",
+        );
+        assert_eq!(
+            rows(result),
+            vec![
+                vec![Value::Text("Alice".to_string())],
+                vec![Value::Text("Carol".to_string())],
+            ]
+        );
     }
 
     #[test]

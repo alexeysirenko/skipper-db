@@ -106,6 +106,10 @@ pub(crate) fn format_expr(e: &Expr) -> String {
     match e {
         Expr::Column(c) => c.clone(),
         Expr::Literal(l) => format_literal(l),
+        Expr::Function { name, args } => {
+            let rendered: Vec<String> = args.iter().map(format_expr).collect();
+            format!("{}({})", name, rendered.join(", "))
+        }
         Expr::Compare { left, op, right } => {
             format!(
                 "{} {} {}",

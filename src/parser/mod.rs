@@ -167,9 +167,21 @@ impl Parser {
                 Ok(Expr::Literal(Literal::Null))
             }
             TokenKind::Ident(s) if !is_reserved(s) => {
-                let s = s.clone();
+                let name = s.clone();
                 self.advance();
-                Ok(Expr::Column(s))
+                if self.eat(&TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    if !matches!(self.current(), TokenKind::RParen) {
+                        args.push(self.parse_expr()?);
+                        while self.eat(&TokenKind::Comma) {
+                            args.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "')' after function arguments")?;
+                    Ok(Expr::Function { name, args })
+                } else {
+                    Ok(Expr::Column(name))
+                }
             }
             _ => Err(self.error("expected an expression")),
         }
@@ -544,6 +556,33 @@ mod tests {
             s.projection,
             Projection::Items(vec![col_item("id"), col_item("name")])
         );
+    }
+
+    #[test]
+    fn parses_function_call() {
+        let s = select(parse("SELECT name, LENGTH(name) FROM users").unwrap());
+        assert_eq!(
+            s.projection,
+            Projection::Items(vec![
+                col_item("name"),
+                SelectItem {
+                    expr: Expr::Function {
+                        name: "LENGTH".to_string(),
+                        args: vec![Expr::Column("name".to_string())],
+                    },
+                    alias: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_alias() {
+        let s = select(parse("SELECT LENGTH(name) AS len FROM users").unwrap());
+        match s.projection {
+            Projection::Items(items) => assert_eq!(items[0].alias, Some("len".to_string())),
+            _ => panic!("expected items"),
+        }
     }
 
     #[test]

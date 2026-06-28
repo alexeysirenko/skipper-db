@@ -69,6 +69,10 @@ pub enum Literal {
 pub enum Expr {
     Column(String),
     Literal(Literal),
+    Function {
+        name: String,
+        args: Vec<Expr>,
+    },
     Compare {
         left: Box<Expr>,
         op: CompareOp,
