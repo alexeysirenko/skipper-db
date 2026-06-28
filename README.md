@@ -1,6 +1,6 @@
 # Skipper-DB
 
-A small row-store DBMS in Rust.
+A small row-store SQL database in Rust, driven through a CLI.
 
 ## Build
 
@@ -8,10 +8,11 @@ A small row-store DBMS in Rust.
 
 ## Run
 
-    cargo run -- init --db ./demo-db
-    cargo run -- open --db ./demo-db
+    cargo run -- query --db ./demo-db --sql "CREATE TABLE users (id INT, name TEXT, age INT)"
+    cargo run -- query --db ./demo-db --sql "INSERT INTO users VALUES (1, 'Alice', 20)"
+    cargo run -- query --db ./demo-db --sql "SELECT name FROM users WHERE age > 18"
 
-`RUST_LOG=debug` for verbose logs.
+`RUST_LOG=debug` for verbose logs (logs go to stderr, results to stdout).
 
 ## Tests
 
