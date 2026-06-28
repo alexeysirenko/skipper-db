@@ -7,9 +7,11 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::catalog::schema::Schema;
-use crate::parser::ast::{CreateTable, Expr, Insert, Literal, Projection, Select, Statement};
+use crate::parser::ast::{
+    CreateTable, Expr, Insert, Literal, Projection, Select, SelectItem, Statement,
+};
 use crate::storage::table::Table;
-use plan::LogicalPlan;
+use plan::{LogicalPlan, ProjItem};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlanError {
@@ -159,19 +161,29 @@ fn plan_select(sel: Select, catalog: &dyn Catalog) -> Result<LogicalPlan, PlanEr
         };
     }
 
-    let columns = match sel.projection {
-        Projection::All => table_columns,
-        Projection::Columns(cols) => {
-            for c in &cols {
-                if schema.column_index(c).is_none() {
-                    return Err(unknown_column(c, &sel.from));
-                }
+    let items: Vec<ProjItem> = match sel.projection {
+        Projection::All => table_columns
+            .iter()
+            .map(|c| ProjItem {
+                expr: Expr::Column(c.clone()),
+                name: c.clone(),
+            })
+            .collect(),
+        Projection::Items(select_items) => {
+            let mut out = Vec::with_capacity(select_items.len());
+            for item in select_items {
+                check_columns(&item.expr, &schema, &sel.from)?;
+                let name = output_name(&item);
+                out.push(ProjItem {
+                    expr: item.expr,
+                    name,
+                });
             }
-            cols
+            out
         }
     };
     node = LogicalPlan::Projection {
-        columns,
+        items,
         input: Box::new(node),
     };
 
@@ -205,6 +217,16 @@ fn check_columns(e: &Expr, schema: &Schema, table: &str) -> Result<(), PlanError
             check_columns(l, schema, table)?;
             check_columns(r, schema, table)
         }
+    }
+}
+
+fn output_name(item: &SelectItem) -> String {
+    if let Some(alias) = &item.alias {
+        return alias.clone();
+    }
+    match &item.expr {
+        Expr::Column(c) => c.clone(),
+        other => plan::format_expr(other),
     }
 }
 

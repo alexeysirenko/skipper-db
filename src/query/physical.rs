@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::parser::ast::{ColumnDef, Expr, Literal};
-use crate::query::plan::{LogicalPlan, format_column, format_expr, format_literal};
+use crate::query::plan::{LogicalPlan, ProjItem, format_column, format_expr, format_literal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhysicalPlan {
@@ -22,7 +22,7 @@ pub enum PhysicalPlan {
         input: Box<PhysicalPlan>,
     },
     ProjectionExec {
-        columns: Vec<String>,
+        items: Vec<ProjItem>,
         input: Box<PhysicalPlan>,
     },
     SortExec {
@@ -47,8 +47,8 @@ pub fn from_logical(plan: LogicalPlan) -> PhysicalPlan {
             predicate,
             input: Box::new(from_logical(*input)),
         },
-        LogicalPlan::Projection { columns, input } => PhysicalPlan::ProjectionExec {
-            columns,
+        LogicalPlan::Projection { items, input } => PhysicalPlan::ProjectionExec {
+            items,
             input: Box::new(from_logical(*input)),
         },
         LogicalPlan::Sort {
@@ -90,8 +90,9 @@ impl PhysicalPlan {
                 writeln!(f, "{pad}FilterExec [{}]", format_expr(predicate))?;
                 input.write_at(f, depth + 1)
             }
-            PhysicalPlan::ProjectionExec { columns, input } => {
-                writeln!(f, "{pad}ProjectionExec [{}]", columns.join(", "))?;
+            PhysicalPlan::ProjectionExec { items, input } => {
+                let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+                writeln!(f, "{pad}ProjectionExec [{}]", names.join(", "))?;
                 input.write_at(f, depth + 1)
             }
             PhysicalPlan::SortExec {
@@ -128,7 +129,16 @@ mod tests {
         let logical = LogicalPlan::Limit {
             count: 10,
             input: Box::new(LogicalPlan::Projection {
-                columns: vec!["id".to_string(), "name".to_string()],
+                items: vec![
+                    ProjItem {
+                        expr: Expr::Column("id".to_string()),
+                        name: "id".to_string(),
+                    },
+                    ProjItem {
+                        expr: Expr::Column("name".to_string()),
+                        name: "name".to_string(),
+                    },
+                ],
                 input: Box::new(LogicalPlan::Filter {
                     predicate: Expr::Compare {
                         left: Box::new(Expr::Column("age".to_string())),

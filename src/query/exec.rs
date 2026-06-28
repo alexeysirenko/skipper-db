@@ -72,18 +72,17 @@ fn build(plan: &PhysicalPlan, dir: &Path) -> Result<(Box<dyn Operator>, Vec<Stri
                 cols,
             ))
         }
-        PhysicalPlan::ProjectionExec { columns, input } => {
+        PhysicalPlan::ProjectionExec { items, input } => {
             let (child, child_cols) = build(input, dir)?;
-            let indices = columns
-                .iter()
-                .map(|c| child_cols.iter().position(|x| x == c).unwrap())
-                .collect();
+            let exprs = items.iter().map(|i| i.expr.clone()).collect();
+            let out_cols = items.iter().map(|i| i.name.clone()).collect();
             Ok((
                 Box::new(ProjectOp {
                     input: child,
-                    indices,
+                    exprs,
+                    columns: child_cols,
                 }),
-                columns.clone(),
+                out_cols,
             ))
         }
         PhysicalPlan::SortExec {
@@ -148,14 +147,18 @@ impl Operator for FilterOp {
 
 struct ProjectOp {
     input: Box<dyn Operator>,
-    indices: Vec<usize>,
+    exprs: Vec<Expr>,
+    columns: Vec<String>,
 }
 
 impl Operator for ProjectOp {
     fn next(&mut self) -> Option<Row> {
-        self.input
-            .next()
-            .map(|row| self.indices.iter().map(|&i| row[i].clone()).collect())
+        self.input.next().map(|row| {
+            self.exprs
+                .iter()
+                .map(|e| eval_scalar(e, &row, &self.columns))
+                .collect()
+        })
     }
 }
 

@@ -43,7 +43,13 @@ pub struct Select {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Projection {
     All,
-    Columns(Vec<String>),
+    Items(Vec<SelectItem>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectItem {
+    pub expr: Expr,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

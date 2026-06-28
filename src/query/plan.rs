@@ -3,6 +3,12 @@ use std::fmt;
 use crate::parser::ast::{ColumnDef, CompareOp, DataType, Expr, Literal};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjItem {
+    pub expr: Expr,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogicalPlan {
     CreateTable {
         table: String,
@@ -21,7 +27,7 @@ pub enum LogicalPlan {
         input: Box<LogicalPlan>,
     },
     Projection {
-        columns: Vec<String>,
+        items: Vec<ProjItem>,
         input: Box<LogicalPlan>,
     },
     Sort {
@@ -58,8 +64,9 @@ impl LogicalPlan {
                 writeln!(f, "{pad}Filter [{}]", format_expr(predicate))?;
                 input.write_at(f, depth + 1)
             }
-            LogicalPlan::Projection { columns, input } => {
-                writeln!(f, "{pad}Projection [{}]", columns.join(", "))?;
+            LogicalPlan::Projection { items, input } => {
+                let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+                writeln!(f, "{pad}Projection [{}]", names.join(", "))?;
                 input.write_at(f, depth + 1)
             }
             LogicalPlan::Sort {
@@ -139,7 +146,16 @@ mod tests {
         let plan = LogicalPlan::Limit {
             count: 10,
             input: Box::new(LogicalPlan::Projection {
-                columns: vec!["id".to_string(), "name".to_string()],
+                items: vec![
+                    ProjItem {
+                        expr: Expr::Column("id".to_string()),
+                        name: "id".to_string(),
+                    },
+                    ProjItem {
+                        expr: Expr::Column("name".to_string()),
+                        name: "name".to_string(),
+                    },
+                ],
                 input: Box::new(LogicalPlan::Filter {
                     predicate: Expr::Compare {
                         left: Box::new(Expr::Column("age".to_string())),

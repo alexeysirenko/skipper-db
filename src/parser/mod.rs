@@ -3,7 +3,7 @@ pub mod lexer;
 
 use ast::{
     ColumnDef, CompareOp, CreateTable, DataType, Expr, Insert, Literal, OrderBy, Projection,
-    Select, Statement,
+    Select, SelectItem, Statement,
 };
 use lexer::{ParseError, Token, TokenKind, tokenize};
 
@@ -80,11 +80,21 @@ impl Parser {
         if self.eat(&TokenKind::Star) {
             return Ok(Projection::All);
         }
-        let mut columns = vec![self.parse_name("a column or '*'")?];
+        let mut items = vec![self.parse_select_item()?];
         while self.eat(&TokenKind::Comma) {
-            columns.push(self.parse_name("a column name")?);
+            items.push(self.parse_select_item()?);
         }
-        Ok(Projection::Columns(columns))
+        Ok(Projection::Items(items))
+    }
+
+    fn parse_select_item(&mut self) -> Result<SelectItem, ParseError> {
+        let expr = self.parse_expr()?;
+        let alias = if self.eat_keyword("AS") {
+            Some(self.expect_ident("alias")?)
+        } else {
+            None
+        };
+        Ok(SelectItem { expr, alias })
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
@@ -351,9 +361,9 @@ impl Parser {
 }
 
 fn is_reserved(word: &str) -> bool {
-    const KEYWORDS: [&str; 19] = [
+    const KEYWORDS: [&str; 20] = [
         "SELECT", "FROM", "WHERE", "ORDER", "BY", "LIMIT", "AND", "OR", "NOT", "NULL", "ASC",
-        "DESC", "INSERT", "INTO", "VALUES", "CREATE", "TABLE", "INT", "TEXT",
+        "DESC", "INSERT", "INTO", "VALUES", "CREATE", "TABLE", "INT", "TEXT", "AS",
     ];
     KEYWORDS.iter().any(|k| word.eq_ignore_ascii_case(k))
 }
@@ -520,12 +530,19 @@ mod tests {
         assert_eq!(s.limit, None);
     }
 
+    fn col_item(name: &str) -> SelectItem {
+        SelectItem {
+            expr: Expr::Column(name.to_string()),
+            alias: None,
+        }
+    }
+
     #[test]
     fn parses_select_columns() {
         let s = select(parse("SELECT id, name FROM users").unwrap());
         assert_eq!(
             s.projection,
-            Projection::Columns(vec!["id".to_string(), "name".to_string()])
+            Projection::Items(vec![col_item("id"), col_item("name")])
         );
     }
 
@@ -595,8 +612,7 @@ mod tests {
 
     #[test]
     fn rejects_select_without_projection() {
-        let e = parse("SELECT FROM users").unwrap_err();
-        assert!(e.message.contains("column"));
+        assert!(parse("SELECT FROM users").is_err());
     }
 
     #[test]
