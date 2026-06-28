@@ -22,6 +22,7 @@ A small row-store DBMS in Rust.
     src/cli       clap entry, subcommand dispatch
     src/catalog   db directory init/open, table schema
     src/storage   record codec, slotted pages, table heap, B+Tree index
+    src/parser    SQL lexer, AST, recursive-descent parser
     src/types     Value / ColumnType
     src/error     thiserror enum
     tests/        cli integration tests
@@ -51,4 +52,31 @@ stored in a sibling `<table>.idx` file (page 0 metadata + one node per page).
     `find_by_key` re-reads the row through `get` and checks the key, so stale
     entries resolve to `None` rather than a wrong row — but freed entries are
     not reclaimed.
+
+## Parser
+
+A hand-written lexer + recursive-descent parser (no external crate). It turns a
+query string into an internal AST (`src/parser/ast.rs`) and never touches
+storage — execution is a later stage.
+
+Supported subset:
+
+    CREATE TABLE t (col INT|TEXT [NOT NULL | NULL], ...)
+    INSERT INTO t [(col, ...)] VALUES (v, ...)        -- v: int | 'string' | NULL
+    SELECT */col,... FROM t [WHERE expr] [ORDER BY col [ASC|DESC]] [LIMIT n]
+
+`expr` is built from column refs and int/string/NULL literals with `= != < <= >
+>=`, combined by `AND`/`OR` (AND binds tighter) and parentheses.
+
+AST shape: `Statement` is `CreateTable { table, columns }`, `Insert { table,
+columns, values }`, or `Select { projection, from, filter, order_by, limit }`.
+
+It does **not** check that tables/columns exist, that types are compatible, or
+that value and column counts match — that belongs to a later binder. Invalid
+input yields a positioned error (`parse error at position N: ..., found ...`)
+and never panics.
+
+Run it:
+
+    cargo run -- parse --query "SELECT id, name FROM users WHERE age > 18"
 
