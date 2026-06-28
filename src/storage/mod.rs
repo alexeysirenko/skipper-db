@@ -1,5 +1,6 @@
 pub mod page;
 pub mod record;
+pub mod table;
 
 use std::fs::File;
 use std::fs::OpenOptions;

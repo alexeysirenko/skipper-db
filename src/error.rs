@@ -14,6 +14,10 @@ pub enum Error {
     MalformedRecord,
     #[error("malformed schema")]
     MalformedSchema,
+    #[error("schema is too large for the metadata page")]
+    SchemaTooLarge,
+    #[error("record is too large for a page")]
+    RecordTooLarge,
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
