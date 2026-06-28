@@ -109,6 +109,16 @@ impl Table {
         }
     }
 
+    pub fn scan(&mut self) -> Scan<'_> {
+        Scan {
+            table: self,
+            total_pages: None,
+            page_id: 0,
+            page: None,
+            next_slot: 0,
+        }
+    }
+
     fn page_count(&self) -> Result<u32> {
         Ok((self.file.metadata()?.len() / PAGE_SIZE as u64) as u32)
     }
@@ -126,6 +136,75 @@ impl Table {
         self.file.write_all(slotted.as_bytes())?;
         self.file.sync_all()?;
         Ok(())
+    }
+}
+
+pub struct Scan<'a> {
+    table: &'a mut Table,
+    total_pages: Option<u32>,
+    page_id: u32,
+    page: Option<SlottedPage>,
+    next_slot: usize,
+}
+
+impl Scan<'_> {
+    fn total_pages(&mut self) -> Result<u32> {
+        match self.total_pages {
+            Some(count) => Ok(count),
+            None => {
+                let count = self.table.page_count()?;
+                self.total_pages = Some(count);
+                Ok(count)
+            }
+        }
+    }
+}
+
+impl Iterator for Scan<'_> {
+    type Item = Result<(Rid, Vec<Value>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let total_pages = match self.total_pages() {
+            Ok(count) => count,
+            Err(e) => return Some(Err(e)),
+        };
+
+        loop {
+            if self.page.is_none() {
+                let next_page = if self.page_id == 0 { 1 } else { self.page_id + 1 };
+                if next_page >= total_pages {
+                    return None;
+                }
+                self.page_id = next_page;
+                self.next_slot = 0;
+                match self.table.read_page(next_page) {
+                    Ok(page) => self.page = Some(page),
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+
+            let page = self.page.as_ref().unwrap();
+            if self.next_slot >= page.slot_count() {
+                self.page = None;
+                continue;
+            }
+            let slot = self.next_slot as SlotId;
+            self.next_slot += 1;
+
+            if let Some(bytes) = page.get(slot) {
+                let row = match record::decode(&self.table.schema, bytes) {
+                    Ok(row) => row,
+                    Err(e) => return Some(Err(e)),
+                };
+                return Some(Ok((
+                    Rid {
+                        page: self.page_id,
+                        slot,
+                    },
+                    row,
+                )));
+            }
+        }
     }
 }
 
@@ -240,6 +319,78 @@ mod tests {
         assert_eq!(
             table.get(rids[499]).unwrap(),
             Some(vec![Value::Int(499), Value::Text("x".repeat(40))])
+        );
+    }
+
+    fn scanned_rows(table: &mut Table) -> Vec<Vec<Value>> {
+        table.scan().map(|r| r.unwrap().1).collect()
+    }
+
+    #[test]
+    fn scan_empty_table_yields_nothing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        assert!(scanned_rows(&mut table).is_empty());
+    }
+
+    #[test]
+    fn scan_returns_all_rows_in_order() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        let rows = vec![
+            vec![Value::Int(1), Value::Text("a".to_string())],
+            vec![Value::Int(2), Value::Null],
+            vec![Value::Int(3), Value::Text("c".to_string())],
+        ];
+        for row in &rows {
+            table.insert(row).unwrap();
+        }
+
+        assert_eq!(scanned_rows(&mut table), rows);
+    }
+
+    #[test]
+    fn scan_works_after_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+
+        let rows = vec![
+            vec![Value::Int(1), Value::Text("a".to_string())],
+            vec![Value::Int(2), Value::Null],
+        ];
+        {
+            let mut table = Table::create(&path, sample_schema()).unwrap();
+            for row in &rows {
+                table.insert(row).unwrap();
+            }
+        }
+
+        let mut table = Table::open(&path).unwrap();
+        assert_eq!(scanned_rows(&mut table), rows);
+    }
+
+    #[test]
+    fn scan_covers_multiple_pages() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("big.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        for i in 0..500 {
+            table
+                .insert(&[Value::Int(i), Value::Text("x".repeat(40))])
+                .unwrap();
+        }
+
+        let scanned = scanned_rows(&mut table);
+        assert_eq!(scanned.len(), 500);
+        assert_eq!(scanned[0], vec![Value::Int(0), Value::Text("x".repeat(40))]);
+        assert_eq!(
+            scanned[499],
+            vec![Value::Int(499), Value::Text("x".repeat(40))]
         );
     }
 }
