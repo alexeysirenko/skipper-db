@@ -4,7 +4,28 @@ A small row-store SQL database in Rust, driven through a CLI.
 
 ## Build
 
-    cargo build
+    cargo build              # debug build at target/debug/db-cli
+    cargo build --release    # optimized build at target/release/db-cli
+
+The code is OS-agnostic, so it builds natively on Linux, macOS, and Windows.
+
+### Binaries for other platforms
+
+Add the target once, then build against it:
+
+    rustup target add x86_64-unknown-linux-gnu     # Linux x86_64
+    rustup target add aarch64-apple-darwin         # macOS Apple Silicon
+    rustup target add x86_64-apple-darwin          # macOS Intel
+    rustup target add x86_64-pc-windows-gnu        # Windows x86_64
+
+    cargo build --release --target x86_64-pc-windows-gnu
+
+The binary lands in `target/<triple>/release/db-cli` (`db-cli.exe` on Windows).
+Cross-OS builds need a linker for the target (e.g. `mingw-w64` for Windows); the
+[`cross`](https://github.com/cross-rs/cross) tool does this in Docker without
+installing toolchains:
+
+    cross build --release --target x86_64-pc-windows-gnu
 
 ## Run
 
