@@ -86,3 +86,21 @@ It still does not execute — just builds and validates the plan. `--db` points 
 a directory of `<table>.tbl` files used as the catalog.
 
     cargo run -- plan --db ./demo-db --query "SELECT id FROM users WHERE age > 18 LIMIT 5"
+
+## Execution
+
+Lowers the logical plan to a physical plan (`...Exec` nodes) and runs it with
+Volcano-style pull operators against storage. The full path:
+
+    SQL -> parse -> AST -> bind -> logical plan -> physical plan -> operators -> rows
+
+`TableScanExec` reads live rows via the storage scan; `FilterExec`,
+`ProjectionExec`, `SortExec`, `LimitExec` pull from their child. CREATE TABLE and
+INSERT go straight to storage, so data persists across runs. Comparisons on NULL
+or mismatched types are false (no three-valued logic); `ORDER BY` sorts NULLs
+first.
+
+    cargo run -- query   --db ./demo-db --sql "CREATE TABLE users (id INT, name TEXT, age INT)"
+    cargo run -- query   --db ./demo-db --sql "INSERT INTO users VALUES (1, 'Alice', 20)"
+    cargo run -- query   --db ./demo-db --sql "SELECT id, name FROM users WHERE age > 18 ORDER BY name LIMIT 10"
+    cargo run -- explain --db ./demo-db --sql "SELECT id FROM users WHERE age > 18"
