@@ -109,6 +109,34 @@ impl Table {
         }
     }
 
+    pub fn update(&mut self, rid: Rid, values: &[Value]) -> Result<bool> {
+        let record = record::encode(&self.schema, values)?;
+        if rid.page == 0 || rid.page >= self.page_count()? {
+            return Ok(false);
+        }
+        let mut page = self.read_page(rid.page)?;
+        if page.get(rid.slot).is_none() {
+            return Ok(false);
+        }
+        if !page.update(rid.slot, &record) {
+            return Err(Error::RecordTooLarge);
+        }
+        self.write_page(rid.page, &page)?;
+        Ok(true)
+    }
+
+    pub fn delete(&mut self, rid: Rid) -> Result<bool> {
+        if rid.page == 0 || rid.page >= self.page_count()? {
+            return Ok(false);
+        }
+        let mut page = self.read_page(rid.page)?;
+        if !page.delete(rid.slot) {
+            return Ok(false);
+        }
+        self.write_page(rid.page, &page)?;
+        Ok(true)
+    }
+
     pub fn scan(&mut self) -> Scan<'_> {
         Scan {
             table: self,
@@ -125,7 +153,8 @@ impl Table {
 
     fn read_page(&mut self, page: u32) -> Result<SlottedPage> {
         let mut buf = [0u8; PAGE_SIZE];
-        self.file.seek(SeekFrom::Start(page as u64 * PAGE_SIZE as u64))?;
+        self.file
+            .seek(SeekFrom::Start(page as u64 * PAGE_SIZE as u64))?;
         self.file.read_exact(&mut buf)?;
         Ok(SlottedPage::from_bytes(buf))
     }
@@ -171,7 +200,11 @@ impl Iterator for Scan<'_> {
 
         loop {
             if self.page.is_none() {
-                let next_page = if self.page_id == 0 { 1 } else { self.page_id + 1 };
+                let next_page = if self.page_id == 0 {
+                    1
+                } else {
+                    self.page_id + 1
+                };
                 if next_page >= total_pages {
                     return None;
                 }
@@ -391,6 +424,113 @@ mod tests {
         assert_eq!(
             scanned[499],
             vec![Value::Int(499), Value::Text("x".repeat(40))]
+        );
+    }
+
+    #[test]
+    fn update_changes_returned_value() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        let rid = table
+            .insert(&[Value::Int(1), Value::Text("alice".to_string())])
+            .unwrap();
+        assert!(
+            table
+                .update(rid, &[Value::Int(1), Value::Text("bob".to_string())])
+                .unwrap()
+        );
+
+        assert_eq!(
+            table.get(rid).unwrap(),
+            Some(vec![Value::Int(1), Value::Text("bob".to_string())])
+        );
+    }
+
+    #[test]
+    fn update_survives_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+
+        let rid;
+        {
+            let mut table = Table::create(&path, sample_schema()).unwrap();
+            rid = table
+                .insert(&[Value::Int(1), Value::Text("alice".to_string())])
+                .unwrap();
+            table
+                .update(
+                    rid,
+                    &[Value::Int(1), Value::Text("a much longer name".to_string())],
+                )
+                .unwrap();
+        }
+
+        let mut table = Table::open(&path).unwrap();
+        assert_eq!(
+            table.get(rid).unwrap(),
+            Some(vec![
+                Value::Int(1),
+                Value::Text("a much longer name".to_string())
+            ])
+        );
+    }
+
+    #[test]
+    fn delete_hides_row_from_get_and_scan() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+
+        let keep = table
+            .insert(&[Value::Int(1), Value::Text("alice".to_string())])
+            .unwrap();
+        let drop = table
+            .insert(&[Value::Int(2), Value::Text("bob".to_string())])
+            .unwrap();
+
+        assert!(table.delete(drop).unwrap());
+        assert_eq!(table.get(drop).unwrap(), None);
+        assert_eq!(
+            scanned_rows(&mut table),
+            vec![vec![Value::Int(1), Value::Text("alice".to_string())]]
+        );
+        assert_eq!(
+            table.get(keep).unwrap(),
+            Some(vec![Value::Int(1), Value::Text("alice".to_string())])
+        );
+    }
+
+    #[test]
+    fn delete_survives_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+
+        let rid;
+        {
+            let mut table = Table::create(&path, sample_schema()).unwrap();
+            rid = table.insert(&[Value::Int(1), Value::Null]).unwrap();
+            table.delete(rid).unwrap();
+        }
+
+        let mut table = Table::open(&path).unwrap();
+        assert_eq!(table.get(rid).unwrap(), None);
+        assert!(scanned_rows(&mut table).is_empty());
+    }
+
+    #[test]
+    fn mutating_unknown_rid_is_graceful() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("users.tbl");
+        let mut table = Table::create(&path, sample_schema()).unwrap();
+        let missing = Rid { page: 1, slot: 0 };
+
+        assert!(!table.delete(missing).unwrap());
+        assert!(
+            !table
+                .update(missing, &[Value::Int(1), Value::Null])
+                .unwrap()
         );
     }
 }

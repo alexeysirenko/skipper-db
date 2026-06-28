@@ -75,6 +75,50 @@ impl SlottedPage {
         Some(&self.bytes[offset..offset + len])
     }
 
+    // Tombstone a slot so it no longer appears in `get`. Returns false if the
+    // slot is out of range or already dead. The cell space is not reclaimed.
+    pub fn delete(&mut self, slot: SlotId) -> bool {
+        let index = slot as usize;
+        if index >= self.slot_count() {
+            return false;
+        }
+        let (offset, len) = self.slot(index);
+        if len == 0 {
+            return false;
+        }
+        self.set_slot(index, offset as u16, 0);
+        true
+    }
+
+    // Replace a live slot's record. Writes in place when it fits, otherwise
+    // relocates the cell into free space (leaving the old cell as dead space).
+    // Returns false if the slot is out of range, dead, or the page has no room.
+    pub fn update(&mut self, slot: SlotId, record: &[u8]) -> bool {
+        let index = slot as usize;
+        if index >= self.slot_count() {
+            return false;
+        }
+        let (offset, len) = self.slot(index);
+        if len == 0 {
+            return false;
+        }
+
+        if record.len() <= len {
+            self.bytes[offset..offset + record.len()].copy_from_slice(record);
+            self.set_slot(index, offset as u16, record.len() as u16);
+            return true;
+        }
+
+        if record.len() > self.free_space() {
+            return false;
+        }
+        let new_offset = self.free_ptr() - record.len();
+        self.bytes[new_offset..new_offset + record.len()].copy_from_slice(record);
+        self.set_slot(index, new_offset as u16, record.len() as u16);
+        self.set_free_ptr(new_offset as u16);
+        true
+    }
+
     fn slot_dir_end(&self) -> usize {
         HEADER_SIZE + self.slot_count() * SLOT_SIZE
     }
@@ -93,7 +137,10 @@ impl SlottedPage {
 
     fn slot(&self, index: usize) -> (usize, usize) {
         let base = HEADER_SIZE + index * SLOT_SIZE;
-        (self.read_u16(base) as usize, self.read_u16(base + 2) as usize)
+        (
+            self.read_u16(base) as usize,
+            self.read_u16(base + 2) as usize,
+        )
     }
 
     fn set_slot(&mut self, index: usize, offset: u16, len: u16) {
@@ -152,5 +199,43 @@ mod tests {
         let mut page = SlottedPage::new();
         let too_big = vec![0u8; PAGE_SIZE];
         assert_eq!(page.insert(&too_big), None);
+    }
+
+    #[test]
+    fn delete_makes_slot_invisible() {
+        let mut page = SlottedPage::new();
+        let slot = page.insert(b"bye").unwrap();
+
+        assert!(page.delete(slot));
+        assert_eq!(page.get(slot), None);
+        assert!(!page.delete(slot));
+    }
+
+    #[test]
+    fn update_in_place_when_smaller_or_equal() {
+        let mut page = SlottedPage::new();
+        let slot = page.insert(b"hello").unwrap();
+
+        assert!(page.update(slot, b"hey"));
+        assert_eq!(page.get(slot), Some(&b"hey"[..]));
+    }
+
+    #[test]
+    fn update_relocates_when_larger() {
+        let mut page = SlottedPage::new();
+        let slot = page.insert(b"hi").unwrap();
+        let other = page.insert(b"keep").unwrap();
+
+        assert!(page.update(slot, b"a much longer value"));
+        assert_eq!(page.get(slot), Some(&b"a much longer value"[..]));
+        assert_eq!(page.get(other), Some(&b"keep"[..]));
+    }
+
+    #[test]
+    fn update_fails_when_no_room() {
+        let mut page = SlottedPage::new();
+        let slot = page.insert(b"x").unwrap();
+        let huge = vec![0u8; PAGE_SIZE];
+        assert!(!page.update(slot, &huge));
     }
 }
