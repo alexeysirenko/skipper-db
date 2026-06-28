@@ -1,6 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::os::unix::fs::FileExt;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use crate::catalog::schema::Schema;
@@ -99,7 +98,7 @@ impl Table {
         })
     }
 
-    pub fn get(&self, rid: Rid) -> Result<Option<Vec<Value>>> {
+    pub fn get(&mut self, rid: Rid) -> Result<Option<Vec<Value>>> {
         if rid.page == 0 || rid.page >= self.page_count()? {
             return Ok(None);
         }
@@ -114,15 +113,17 @@ impl Table {
         Ok((self.file.metadata()?.len() / PAGE_SIZE as u64) as u32)
     }
 
-    fn read_page(&self, page: u32) -> Result<SlottedPage> {
+    fn read_page(&mut self, page: u32) -> Result<SlottedPage> {
         let mut buf = [0u8; PAGE_SIZE];
-        self.file.read_exact_at(&mut buf, page as u64 * PAGE_SIZE as u64)?;
+        self.file.seek(SeekFrom::Start(page as u64 * PAGE_SIZE as u64))?;
+        self.file.read_exact(&mut buf)?;
         Ok(SlottedPage::from_bytes(buf))
     }
 
-    fn write_page(&self, page: u32, slotted: &SlottedPage) -> Result<()> {
+    fn write_page(&mut self, page: u32, slotted: &SlottedPage) -> Result<()> {
         self.file
-            .write_all_at(slotted.as_bytes(), page as u64 * PAGE_SIZE as u64)?;
+            .seek(SeekFrom::Start(page as u64 * PAGE_SIZE as u64))?;
+        self.file.write_all(slotted.as_bytes())?;
         self.file.sync_all()?;
         Ok(())
     }
@@ -204,7 +205,7 @@ mod tests {
             rid2 = table.insert(&row2).unwrap();
         }
 
-        let table = Table::open(&path).unwrap();
+        let mut table = Table::open(&path).unwrap();
         assert_eq!(table.get(rid1).unwrap(), Some(row1));
         assert_eq!(table.get(rid2).unwrap(), Some(row2));
     }
@@ -213,7 +214,7 @@ mod tests {
     fn get_unknown_rid_is_none() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("users.tbl");
-        let table = Table::create(&path, sample_schema()).unwrap();
+        let mut table = Table::create(&path, sample_schema()).unwrap();
 
         assert_eq!(table.get(Rid { page: 1, slot: 0 }).unwrap(), None);
         assert_eq!(table.get(Rid { page: 0, slot: 0 }).unwrap(), None);
