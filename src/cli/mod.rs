@@ -143,11 +143,32 @@ fn is_bare_name(p: &Path) -> bool {
 }
 
 fn print_result(rs: &ResultSet) {
-    println!("{}", rs.columns.join(" | "));
-    for row in &rs.rows {
-        let cells: Vec<String> = row.iter().map(format_value).collect();
-        println!("{}", cells.join(" | "));
+    let rows: Vec<Vec<String>> = rs
+        .rows
+        .iter()
+        .map(|row| row.iter().map(format_value).collect())
+        .collect();
+
+    let mut widths: Vec<usize> = rs.columns.iter().map(|c| c.chars().count()).collect();
+    for row in &rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.chars().count());
+        }
     }
+
+    print_row(&rs.columns, &widths);
+    for row in &rows {
+        print_row(row, &widths);
+    }
+}
+
+fn print_row(cells: &[String], widths: &[usize]) {
+    let padded: Vec<String> = cells
+        .iter()
+        .zip(widths)
+        .map(|(c, w)| format!("{c:<w$}"))
+        .collect();
+    println!("{}", padded.join(" | ").trim_end());
 }
 
 fn format_value(v: &Value) -> String {
