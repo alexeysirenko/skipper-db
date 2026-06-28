@@ -33,6 +33,10 @@ installing toolchains:
     cargo run -- query --db ./demo-db --sql "INSERT INTO users VALUES (1, 'Alice', 20)"
     cargo run -- query --db ./demo-db --sql "SELECT name FROM users WHERE age > 18"
 
+`--db` is optional: omit it for a `db` directory next to the binary, pass a bare
+name (`--db shop`) for a sibling subdir, or a path (`--db ./demo-db`, `--db
+/data/shop`) to point anywhere.
+
 `RUST_LOG=debug` for verbose logs (logs go to stderr, results to stdout).
 
 ## Tests
