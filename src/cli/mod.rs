@@ -157,6 +157,8 @@ fn print_result(rs: &ResultSet) {
     }
 
     print_row(&rs.columns, &widths);
+    let divider: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+    println!("{}", divider.join("-+-"));
     for row in &rows {
         print_row(row, &widths);
     }
